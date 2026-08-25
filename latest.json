@@ -4,5 +4,5 @@
   "apkUrl": "https://raw.githubusercontent.com/livenewme/Jarvis-Signed/release-feed/releases/v0.1.0/Jarvis-v0.1.0-release-signed.apk",
   "sha256": "815492a2f58fbe9c2480c96be61ad3ced6ab8582e7addd8763f489874f5b0fcf",
   "releaseCertSha256": "e2384592780978342912be64664d4ed53e392d8b0cb107d99a7b47b3423bc153",
-  "notes": "Initial Jarvis Android remote client production release."
+  "releaseNotes": "Initial Jarvis Android remote client production release."
 }
