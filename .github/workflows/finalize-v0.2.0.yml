@@ -1,0 +1,47 @@
+name: Finalize Jarvis Android v0.2.0
+
+on:
+  push:
+    branches: [release-feed]
+    paths:
+      - '.release-trigger-v0.2.0'
+
+permissions:
+  contents: write
+
+jobs:
+  finalize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: release-feed
+      - name: Reconstruct, verify, and publish v0.2.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          STAGE='staging/v0.2.0'
+          APK='releases/v0.2.0/Jarvis-v0.2.0-release-signed.apk'
+          EXPECTED='e81761f33d09d2172de1e5ba5c2a9aba8491af1c69deec574e74ba9d9efe4cb2'
+          mkdir -p "$(dirname "$APK")"
+          cat "$STAGE"/part-* | base64 --decode > "$APK"
+          test -s "$APK"
+          unzip -tq "$APK"
+          SHA256=$(sha256sum "$APK" | awk '{print $1}')
+          test "$SHA256" = "$EXPECTED"
+          cat > latest.json <<EOF
+          {
+            "versionName": "0.2.0",
+            "versionCode": 2,
+            "apkUrl": "https://raw.githubusercontent.com/livenewme/Jarvis-Signed/release-feed/releases/v0.2.0/Jarvis-v0.2.0-release-signed.apk",
+            "sha256": "$SHA256",
+            "releaseCertSha256": "e2384592780978342912be64664d4ed53e392d8b0cb107d99a7b47b3423bc153",
+            "releaseNotes": "Standalone on-device Jarvis runtime with foreground service, live runtime notification, local event history, and direct model connection."
+          }
+          EOF
+          git config user.name 'Jarvis Release Bot'
+          git config user.email 'jarvis-release-bot@users.noreply.github.com'
+          git add "$APK" latest.json
+          git rm -r "$STAGE" .release-trigger-v0.2.0
+          git commit -m 'Publish Jarvis Android v0.2.0 and advance release feed'
+          git push origin HEAD:release-feed
