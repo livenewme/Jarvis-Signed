@@ -1,0 +1,40 @@
+name: Finalize Jarvis Android v0.1.0
+
+on:
+  push:
+    branches: [release-feed]
+    paths:
+      - '.release-trigger-v0.1.0'
+
+permissions:
+  contents: write
+
+jobs:
+  finalize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: release-feed
+      - name: Verify and publish manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK='releases/v0.1.0/Jarvis-v0.1.0-release-signed.apk'
+          test -s "$APK"
+          SHA256=$(sha256sum "$APK" | awk '{print $1}')
+          cat > latest.json <<EOF
+          {
+            "versionName": "0.1.0",
+            "versionCode": 1,
+            "apkUrl": "https://raw.githubusercontent.com/livenewme/Jarvis-Signed/release-feed/releases/v0.1.0/Jarvis-v0.1.0-release-signed.apk",
+            "sha256": "$SHA256",
+            "releaseCertSha256": "e2384592780978342912be64664d4ed53e392d8b0cb107d99a7b47b3423bc153",
+            "notes": "Initial Jarvis Android remote client production release."
+          }
+          EOF
+          git config user.name 'Jarvis Release Bot'
+          git config user.email 'jarvis-release-bot@users.noreply.github.com'
+          git add latest.json
+          git commit -m 'Advance Jarvis Android release feed to v0.1.0'
+          git push origin HEAD:release-feed
