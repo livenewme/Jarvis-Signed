@@ -1,0 +1,25 @@
+name: Export Jarvis Android v0.1.0 APK
+
+on:
+  push:
+    branches: [release-feed]
+    paths:
+      - '.github/export-v0.1.0-trigger'
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: release-feed
+      - name: Verify release APK hash
+        shell: bash
+        run: echo '815492a2f58fbe9c2480c96be61ad3ced6ab8582e7addd8763f489874f5b0fcf  releases/v0.1.0/Jarvis-v0.1.0-release-signed.apk' | sha256sum --check --strict
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Jarvis-v0.1.0-release-signed
+          path: releases/v0.1.0/Jarvis-v0.1.0-release-signed.apk
