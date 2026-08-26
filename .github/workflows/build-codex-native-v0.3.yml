@@ -9,127 +9,87 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
-  build-codex-app-server:
+  prepare-native-inclusive-apk:
     runs-on: ubuntu-latest
+    env:
+      NATIVE_RUN_ID: '32945018291'
+      BASE_APK_SHA256: '09c607a91f29dd5977fdb67e4fa4df1f99564cb34b11e7004d5f4e14a602fa14'
+      UNSTRIPPED_NATIVE_SHA256: '6793beef858006d99558bef6e084862e609f23ed9dd241d14a80a4c87d381a3d'
+      PACKAGE_NAME: 'com.livenewme.jarvis'
+      VERSION_NAME: '0.3.0'
+      VERSION_CODE: '3'
     steps:
       - uses: actions/checkout@v4
+
       - uses: android-actions/setup-android@v3
-      - name: Install Android verification tools
+
+      - name: Install APK verification tools
         run: sdkmanager 'build-tools;35.0.0' >/dev/null
-      - name: Install Rust Android target
+
+      - name: Download successful native build artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          rustup toolchain install 1.95.0 --profile minimal
-          rustup default 1.95.0
-          rustup target add aarch64-linux-android
-          cargo install cargo-ndk --locked
-      - name: Build pinned Codex app-server for Android arm64
+          set -euo pipefail
+          mkdir -p /tmp/native
+          gh run download "$NATIVE_RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --name jarvis-codex-native-v0.3 \
+            --dir /tmp/native
+          test -f /tmp/native/libcodex_app_server.so
+          test "$(sha256sum /tmp/native/libcodex_app_server.so | awk '{print $1}')" = "$UNSTRIPPED_NATIVE_SHA256"
+          file /tmp/native/libcodex_app_server.so
+
+      - name: Strip runtime and prepare native-inclusive unsigned APK
         shell: bash
         run: |
           set -euo pipefail
-          git clone --filter=blob:none https://github.com/openai/codex.git /tmp/openai-codex
-          cd /tmp/openai-codex
-          git checkout 2764e83626efe55f64e04d153fc99a157327f3c2
-          cd codex-rs
+          NDK_ROOT="$ANDROID_HOME/ndk/27.3.13750724"
+          OBJCOPY="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-objcopy"
+          test -x "$OBJCOPY"
 
-          python3 - <<'PY'
-          from pathlib import Path
+          mkdir -p /tmp/package/lib/arm64-v8a out
+          cp /tmp/native/libcodex_app_server.so /tmp/package/lib/arm64-v8a/libcodex_app_server.so
+          "$OBJCOPY" --strip-all /tmp/package/lib/arm64-v8a/libcodex_app_server.so
 
-          workspace = Path('Cargo.toml')
-          text = workspace.read_text()
-          old = 'reqwest = { version = "0.12", features = ["cookies"] }'
-          new = 'reqwest = { version = "0.12", default-features = false, features = ["cookies", "http2", "rustls-tls"] }'
-          if old not in text:
-              raise SystemExit('expected workspace reqwest dependency not found')
-          workspace.write_text(text.replace(old, new, 1))
+          file /tmp/package/lib/arm64-v8a/libcodex_app_server.so | tee out/native-file.txt
+          readelf -h /tmp/package/lib/arm64-v8a/libcodex_app_server.so | tee out/native-readelf-header.txt
+          readelf -d /tmp/package/lib/arm64-v8a/libcodex_app_server.so | tee out/native-readelf-dynamic.txt
+          sha256sum /tmp/package/lib/arm64-v8a/libcodex_app_server.so | tee out/libcodex_app_server.so.sha256
 
-          cargo = Path('http-client/Cargo.toml')
-          text = cargo.read_text()
-          needle = 'native-tls = "0.2"\n'
-          if needle not in text:
-              raise SystemExit('expected native-tls dependency not found')
-          cargo.write_text(text.replace(needle, '', 1))
+          base64 --decode ci/v0.3/app-release-unsigned.apk.b64 > /tmp/package/Jarvis-v0.3.0-native-unsigned.apk
+          test "$(sha256sum /tmp/package/Jarvis-v0.3.0-native-unsigned.apk | awk '{print $1}')" = "$BASE_APK_SHA256"
 
-          source = Path('http-client/src/route_aware_client_pool.rs')
-          text = source.read_text()
-          needle = '                || error.downcast_ref::<native_tls::Error>().is_some()\n'
-          if needle not in text:
-              raise SystemExit('expected native_tls error classifier not found')
-          source.write_text(text.replace(needle, '', 1))
+          BUILD_TOOLS="$ANDROID_HOME/build-tools/35.0.0"
+          BADGING=$("$BUILD_TOOLS/aapt" dump badging /tmp/package/Jarvis-v0.3.0-native-unsigned.apk | head -n 1)
+          grep -Fq "package: name='$PACKAGE_NAME'" <<<"$BADGING"
+          grep -Fq "versionCode='$VERSION_CODE'" <<<"$BADGING"
+          grep -Fq "versionName='$VERSION_NAME'" <<<"$BADGING"
 
-          feedback = Path('feedback/Cargo.toml')
-          text = feedback.read_text()
-          old = 'sentry = { version = "0.46" }\n'
-          new = 'sentry = { version = "0.46", default-features = false, features = ["reqwest", "rustls"] }\n'
-          if old not in text:
-              raise SystemExit('expected codex-feedback sentry dependency not found')
-          feedback.write_text(text.replace(old, new, 1))
-          PY
+          cd /tmp/package
+          zip -9 -q Jarvis-v0.3.0-native-unsigned.apk lib/arm64-v8a/libcodex_app_server.so
+          unzip -tq Jarvis-v0.3.0-native-unsigned.apk
 
-          echo '=== reverse dependency: openssl-sys ==='
-          cargo tree -p codex-app-server --target aarch64-linux-android -i openssl-sys || true
-          echo '=== reverse dependency: native-tls ==='
-          cargo tree -p codex-app-server --target aarch64-linux-android -i native-tls || true
+          NATIVE_SHA=$(sha256sum lib/arm64-v8a/libcodex_app_server.so | awk '{print $1}')
+          BUNDLED_SHA=$(unzip -p Jarvis-v0.3.0-native-unsigned.apk lib/arm64-v8a/libcodex_app_server.so | sha256sum | awk '{print $1}')
+          test "$BUNDLED_SHA" = "$NATIVE_SHA"
 
-          openssl_tree="$(cargo tree -p codex-app-server --target aarch64-linux-android -i openssl-sys 2>/dev/null || true)"
-          if printf '%s\n' "$openssl_tree" | grep -Eq '^openssl-sys v'; then
-            printf '%s\n' "$openssl_tree"
-            echo 'openssl-sys is still present in the Android dependency graph' >&2
-            exit 1
-          fi
+          BADGING=$("$BUILD_TOOLS/aapt" dump badging Jarvis-v0.3.0-native-unsigned.apk | head -n 1)
+          grep -Fq "package: name='$PACKAGE_NAME'" <<<"$BADGING"
+          grep -Fq "versionCode='$VERSION_CODE'" <<<"$BADGING"
+          grep -Fq "versionName='$VERSION_NAME'" <<<"$BADGING"
 
-          native_tls_tree="$(cargo tree -p codex-app-server --target aarch64-linux-android -i native-tls 2>/dev/null || true)"
-          if printf '%s\n' "$native_tls_tree" | grep -Eq '^native-tls v'; then
-            printf '%s\n' "$native_tls_tree"
-            echo 'native-tls is still present in the Android dependency graph' >&2
-            exit 1
-          fi
+          cp Jarvis-v0.3.0-native-unsigned.apk "$GITHUB_WORKSPACE/out/"
+          cd "$GITHUB_WORKSPACE"
+          sha256sum out/Jarvis-v0.3.0-native-unsigned.apk | tee out/Jarvis-v0.3.0-native-unsigned.apk.sha256
 
-          set +e
-          cargo ndk --target arm64-v8a --platform 26 build \
-            -p codex-app-server --bin codex-app-server --release \
-            2>&1 | tee /tmp/codex-android-build.log
-          build_status=${PIPESTATUS[0]}
-          set -e
-
-          diagnostic=/tmp/codex-android-first-error.txt
-          : > "$diagnostic"
-          if [ "$build_status" -ne 0 ]; then
-            if ! grep -n -m1 -B6 -A45 -E \
-              'error(\[E[0-9]+\])?:|could not compile|failed to run custom build command|undefined reference|ld\.lld: error|clang: error|linker .* failed' \
-              /tmp/codex-android-build.log > "$diagnostic"; then
-              tail -n 120 /tmp/codex-android-build.log > "$diagnostic"
-            fi
-            echo '=== FIRST ANDROID NATIVE BUILD ERROR ==='
-            cat "$diagnostic"
-            exit "$build_status"
-          fi
-
-          OUT="$GITHUB_WORKSPACE/out"
-          mkdir -p "$OUT"
-          install -m 0755 target/aarch64-linux-android/release/codex-app-server "$OUT/libcodex_app_server.so"
-          file "$OUT/libcodex_app_server.so"
-          sha256sum "$OUT/libcodex_app_server.so" | tee "$OUT/libcodex_app_server.so.sha256"
-          readelf -h "$OUT/libcodex_app_server.so" | tee "$OUT/readelf-header.txt"
-          readelf -d "$OUT/libcodex_app_server.so" | tee "$OUT/readelf-dynamic.txt"
-
-          cp "$ANDROID_HOME/build-tools/35.0.0/zipalign" "$OUT/zipalign"
-          cp "$ANDROID_HOME/build-tools/35.0.0/aapt" "$OUT/aapt"
-          chmod 0755 "$OUT/zipalign" "$OUT/aapt"
-      - name: Upload diagnostics
-        if: always()
+      - name: Upload exact unsigned signing candidate
         uses: actions/upload-artifact@v4
         with:
-          name: jarvis-codex-native-v0.3-build-log
-          path: |
-            /tmp/codex-android-build.log
-            /tmp/codex-android-first-error.txt
-          if-no-files-found: warn
-      - name: Upload native runtime and verification tools
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: jarvis-codex-native-v0.3
+          name: jarvis-v0.3.0-native-unsigned-prepared
           path: out/
           if-no-files-found: error
