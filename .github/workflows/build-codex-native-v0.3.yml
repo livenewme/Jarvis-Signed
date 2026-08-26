@@ -9,42 +9,98 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
-  inspect-hotfix-bytecode:
+  build-hotfix:
     runs-on: ubuntu-latest
+    env:
+      NATIVE_RUN_ID: '32945018291'
+      BASE_APK_SHA256: '09c607a91f29dd5977fdb67e4fa4df1f99564cb34b11e7004d5f4e14a602fa14'
+      UNSTRIPPED_NATIVE_SHA256: '6793beef858006d99558bef6e084862e609f23ed9dd241d14a80a4c87d381a3d'
     steps:
       - uses: actions/checkout@v4
 
-      - name: Reconstruct exact v0.3 base APK
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Android verification and native strip tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkmanager 'build-tools;35.0.0' 'ndk;27.3.13750724' >/dev/null
+
+      - name: Reconstruct and decode exact v0.3 release base
         shell: bash
         run: |
           set -euo pipefail
           cat ci/v0.3/base64-parts/part-* | base64 --decode > /tmp/base.apk
-          echo '09c607a91f29dd5977fdb67e4fa4df1f99564cb34b11e7004d5f4e14a602fa14  /tmp/base.apk' | sha256sum -c -
+          echo "$BASE_APK_SHA256  /tmp/base.apk" | sha256sum -c -
           unzip -tq /tmp/base.apk
-
-      - name: Decode release bytecode
-        shell: bash
-        run: |
-          set -euo pipefail
           curl -fL --retry 3 -o /tmp/apktool.jar https://github.com/iBotPeaches/Apktool/releases/download/v2.9.3/apktool_2.9.3.jar
           echo '7956eb04194300ce0d0a84ad18771eebc94b89fb8d1ddcce8ea4c056818646f4  /tmp/apktool.jar' | sha256sum -c -
           java -jar /tmp/apktool.jar d -f /tmp/base.apk -o /tmp/decoded
-          mkdir -p out
-          cp /tmp/decoded/AndroidManifest.xml out/
-          grep -R -l -E 'Codex app-server exited|appServer|jsonrpc|chatgptDeviceCode' /tmp/decoded/smali* | tee out/matching-files.txt
-          while IFS= read -r f; do
-            [ -n "$f" ] || continue
-            dest="out/${f#/tmp/decoded/}"
-            mkdir -p "$(dirname "$dest")"
-            cp "$f" "$dest"
-          done < out/matching-files.txt
-          grep -R -n -E 'Codex app-server exited|appServer|jsonrpc|chatgptDeviceCode|exitValue|startDeviceLogin|readMessage' /tmp/decoded/smali* > out/grep.txt || true
 
-      - name: Upload decoded hotfix targets
+      - name: Apply v0.3.1 Codex login hotfix
+        shell: bash
+        run: |
+          set -euo pipefail
+          python ci/v0.3/hotfix_patch.py /tmp/decoded
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('/tmp/decoded/apktool.yml')
+          s = p.read_text()
+          s = s.replace("versionCode: '3'", "versionCode: '4'")
+          s = s.replace("versionCode: 3", "versionCode: 4")
+          s = s.replace("versionName: 0.3.0", "versionName: 0.3.1")
+          s = s.replace("versionName: '0.3.0'", "versionName: '0.3.1'")
+          if ('versionCode: 4' not in s and "versionCode: '4'" not in s):
+              raise SystemExit('versionCode bump not applied')
+          if '0.3.1' not in s:
+              raise SystemExit('versionName bump not applied')
+          p.write_text(s)
+          PY
+          grep -R -n -E 'app-server|0\.3\.1|Codex app-server closed stdout' /tmp/decoded/smali/a/d.smali
+          ! grep -q '"appServer"' /tmp/decoded/smali/a/d.smali
+          ! grep -q '"jsonrpc"' /tmp/decoded/smali/a/d.smali
+
+      - name: Download and inject verified Codex native runtime
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/native /tmp/decoded/lib/arm64-v8a
+          gh run download "$NATIVE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name jarvis-codex-native-v0.3 --dir /tmp/native
+          test -f /tmp/native/libcodex_app_server.so
+          test "$(sha256sum /tmp/native/libcodex_app_server.so | awk '{print $1}')" = "$UNSTRIPPED_NATIVE_SHA256"
+          OBJCOPY="$ANDROID_HOME/ndk/27.3.13750724/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-objcopy"
+          cp /tmp/native/libcodex_app_server.so /tmp/decoded/lib/arm64-v8a/libcodex_app_server.so
+          "$OBJCOPY" --strip-all /tmp/decoded/lib/arm64-v8a/libcodex_app_server.so
+          file /tmp/decoded/lib/arm64-v8a/libcodex_app_server.so
+          readelf -h /tmp/decoded/lib/arm64-v8a/libcodex_app_server.so | grep -E 'Class:|Machine:|Type:'
+          sha256sum /tmp/decoded/lib/arm64-v8a/libcodex_app_server.so | tee /tmp/native-stripped.sha256
+
+      - name: Build and rigorously verify unsigned v0.3.1
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          java -jar /tmp/apktool.jar b /tmp/decoded -o out/Jarvis-v0.3.1-codex-login-hotfix-unsigned.apk
+          unzip -tq out/Jarvis-v0.3.1-codex-login-hotfix-unsigned.apk
+          BUILD_TOOLS="$ANDROID_HOME/build-tools/35.0.0"
+          "$BUILD_TOOLS/aapt" dump badging out/Jarvis-v0.3.1-codex-login-hotfix-unsigned.apk | head -n 1 | tee out/badging.txt
+          grep -Fq "package: name='com.livenewme.jarvis'" out/badging.txt
+          grep -Fq "versionCode='4'" out/badging.txt
+          grep -Fq "versionName='0.3.1'" out/badging.txt
+          unzip -p out/Jarvis-v0.3.1-codex-login-hotfix-unsigned.apk lib/arm64-v8a/libcodex_app_server.so > /tmp/bundled-native.so
+          test "$(sha256sum /tmp/bundled-native.so | awk '{print $1}')" = "$(awk '{print $1}' /tmp/native-stripped.sha256)"
+          file /tmp/bundled-native.so | tee out/native-file.txt
+          cp /tmp/native-stripped.sha256 out/libcodex_app_server.so.sha256
+          sha256sum out/Jarvis-v0.3.1-codex-login-hotfix-unsigned.apk | tee out/Jarvis-v0.3.1-codex-login-hotfix-unsigned.apk.sha256
+
+      - name: Upload unsigned hotfix
         uses: actions/upload-artifact@v4
         with:
-          name: jarvis-v0.3-hotfix-bytecode
+          name: jarvis-v0.3.1-codex-login-hotfix-unsigned
           path: out/
           if-no-files-found: error
