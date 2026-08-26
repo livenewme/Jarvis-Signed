@@ -1,4 +1,4 @@
-name: Temporary prepare Jarvis v0.3 unsigned APK
+name: Inspect Jarvis v0.3 release DEX
 
 on:
   push:
@@ -9,89 +9,56 @@ on:
 
 permissions:
   contents: read
-  actions: read
 
 jobs:
-  prepare:
+  inspect:
     runs-on: ubuntu-latest
-    env:
-      NATIVE_RUN_ID: '32945018291'
-      BASE_APK_SHA256: '09c607a91f29dd5977fdb67e4fa4df1f99564cb34b11e7004d5f4e14a602fa14'
-      UNSTRIPPED_NATIVE_SHA256: '6793beef858006d99558bef6e084862e609f23ed9dd241d14a80a4c87d381a3d'
-      PACKAGE_NAME: 'com.livenewme.jarvis'
-      VERSION_NAME: '0.3.0'
-      VERSION_CODE: '3'
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ci/codex-native-v0.3
 
-      - uses: android-actions/setup-android@v3
-
-      - name: Install APK verification tools
-        run: sdkmanager 'build-tools;35.0.0' >/dev/null
-
-      - name: Download successful native build artifact
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          mkdir -p /tmp/native
-          gh run download "$NATIVE_RUN_ID" \
-            --repo "$GITHUB_REPOSITORY" \
-            --name jarvis-codex-native-v0.3 \
-            --dir /tmp/native
-          test -f /tmp/native/libcodex_app_server.so
-          test "$(sha256sum /tmp/native/libcodex_app_server.so | awk '{print $1}')" = "$UNSTRIPPED_NATIVE_SHA256"
-          file /tmp/native/libcodex_app_server.so
-
-      - name: Strip runtime and prepare native-inclusive unsigned APK
+      - name: Reconstruct exact v0.3 base APK
         shell: bash
         run: |
           set -euo pipefail
-          NDK_ROOT="$ANDROID_HOME/ndk/27.3.13750724"
-          OBJCOPY="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-objcopy"
-          test -x "$OBJCOPY"
+          mkdir -p /tmp/jarvis
+          cat \
+            ci/v0.3/base64-parts/part-000 \
+            ci/v0.3/base64-parts/part-001 \
+            ci/v0.3/base64-parts/part-002 \
+            ci/v0.3/base64-parts/part-003 \
+            ci/v0.3/base64-parts/part-004 \
+            ci/v0.3/base64-parts/part-005a \
+            ci/v0.3/base64-parts/part-005b \
+            ci/v0.3/base64-parts/part-006 \
+            | base64 --decode > /tmp/jarvis/base.apk
+          test "$(sha256sum /tmp/jarvis/base.apk | awk '{print $1}')" = \
+            '09c607a91f29dd5977fdb67e4fa4df1f99564cb34b11e7004d5f4e14a602fa14'
+          unzip -tq /tmp/jarvis/base.apk
+          sha256sum /tmp/jarvis/base.apk
 
-          mkdir -p /tmp/package/lib/arm64-v8a out
-          cp /tmp/native/libcodex_app_server.so /tmp/package/lib/arm64-v8a/libcodex_app_server.so
-          "$OBJCOPY" --strip-all /tmp/package/lib/arm64-v8a/libcodex_app_server.so
+      - name: Disassemble release DEX
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 3 -o /tmp/apktool.jar \
+            https://github.com/iBotPeaches/Apktool/releases/download/v3.0.3/apktool_3.0.3.jar
+          echo 'dbf930b076c6b9be08d57c449cacefc3bdd6b71ebd59b3066fc0e1f5b14f9423  /tmp/apktool.jar' | sha256sum -c -
+          java -jar /tmp/apktool.jar d -f -r /tmp/jarvis/base.apk -o /tmp/jarvis/decoded
+          echo '=== release DEX sites ==='
+          grep -R -n -E 'Codex app-server exited|exitValue|jsonrpc|chatgptDeviceCode' /tmp/jarvis/decoded/smali* || true
+          match="$(grep -R -l -F 'Codex app-server exited' /tmp/jarvis/decoded/smali* | head -n 1)"
+          test -n "$match"
+          echo "MATCH=$match"
+          cat "$match"
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          cp "$match" "$GITHUB_WORKSPACE/out/CodexAppServerClient.smali"
+          cp /tmp/jarvis/base.apk "$GITHUB_WORKSPACE/out/base.apk"
 
-          file /tmp/package/lib/arm64-v8a/libcodex_app_server.so | tee out/native-file.txt
-          readelf -h /tmp/package/lib/arm64-v8a/libcodex_app_server.so | tee out/native-readelf-header.txt
-          readelf -d /tmp/package/lib/arm64-v8a/libcodex_app_server.so | tee out/native-readelf-dynamic.txt
-          sha256sum /tmp/package/lib/arm64-v8a/libcodex_app_server.so | tee out/libcodex_app_server.so.sha256
-
-          base64 --decode ci/v0.3/app-release-unsigned.apk.b64 > /tmp/package/Jarvis-v0.3.0-native-unsigned.apk
-          test "$(sha256sum /tmp/package/Jarvis-v0.3.0-native-unsigned.apk | awk '{print $1}')" = "$BASE_APK_SHA256"
-
-          BUILD_TOOLS="$ANDROID_HOME/build-tools/35.0.0"
-          BADGING=$("$BUILD_TOOLS/aapt" dump badging /tmp/package/Jarvis-v0.3.0-native-unsigned.apk | head -n 1)
-          grep -Fq "package: name='$PACKAGE_NAME'" <<<"$BADGING"
-          grep -Fq "versionCode='$VERSION_CODE'" <<<"$BADGING"
-          grep -Fq "versionName='$VERSION_NAME'" <<<"$BADGING"
-
-          cd /tmp/package
-          zip -9 -q Jarvis-v0.3.0-native-unsigned.apk lib/arm64-v8a/libcodex_app_server.so
-          unzip -tq Jarvis-v0.3.0-native-unsigned.apk
-
-          NATIVE_SHA=$(sha256sum lib/arm64-v8a/libcodex_app_server.so | awk '{print $1}')
-          BUNDLED_SHA=$(unzip -p Jarvis-v0.3.0-native-unsigned.apk lib/arm64-v8a/libcodex_app_server.so | sha256sum | awk '{print $1}')
-          test "$BUNDLED_SHA" = "$NATIVE_SHA"
-
-          BADGING=$("$BUILD_TOOLS/aapt" dump badging Jarvis-v0.3.0-native-unsigned.apk | head -n 1)
-          grep -Fq "package: name='$PACKAGE_NAME'" <<<"$BADGING"
-          grep -Fq "versionCode='$VERSION_CODE'" <<<"$BADGING"
-          grep -Fq "versionName='$VERSION_NAME'" <<<"$BADGING"
-
-          cp Jarvis-v0.3.0-native-unsigned.apk "$GITHUB_WORKSPACE/out/"
-          cd "$GITHUB_WORKSPACE"
-          sha256sum out/Jarvis-v0.3.0-native-unsigned.apk | tee out/Jarvis-v0.3.0-native-unsigned.apk.sha256
-
-      - name: Upload exact unsigned signing candidate
+      - name: Upload DEX inspection
         uses: actions/upload-artifact@v4
         with:
-          name: jarvis-v0.3.0-native-unsigned-prepared
+          name: jarvis-v0.3-dex-inspection
           path: out/
           if-no-files-found: error
