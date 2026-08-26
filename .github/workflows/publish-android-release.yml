@@ -1,0 +1,162 @@
+name: Publish verified Jarvis Android release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_name:
+        description: 'Version name, for example 0.3.0'
+        required: true
+        type: string
+      version_code:
+        description: 'Strictly increasing Android versionCode'
+        required: true
+        type: string
+      expected_sha256:
+        description: 'SHA-256 of the offline-signed APK'
+        required: true
+        type: string
+      release_notes:
+        description: 'Release notes shown by the updater'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: jarvis-android-release-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      VERSION_NAME: ${{ inputs.version_name }}
+      VERSION_CODE: ${{ inputs.version_code }}
+      EXPECTED_SHA: ${{ inputs.expected_sha256 }}
+      RELEASE_NOTES: ${{ inputs.release_notes }}
+      RELEASE_CERT: e2384592780978342912be64664d4ed53e392d8b0cb107d99a7b47b3423bc153
+      PACKAGE_NAME: com.livenewme.jarvis
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: release-feed
+          fetch-depth: 0
+      - uses: android-actions/setup-android@v3
+      - name: Install APK verification tools
+        run: sdkmanager 'build-tools;35.0.0' >/dev/null
+      - name: Reconstruct and verify offline-signed candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXPECTED_SHA=$(tr '[:upper:]' '[:lower:]' <<<"$EXPECTED_SHA" | tr -d '[:space:]')
+          export EXPECTED_SHA
+          [[ "$VERSION_NAME" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]
+          [[ "$VERSION_CODE" =~ ^[1-9][0-9]*$ ]]
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{64}$ ]]
+
+          CURRENT_CODE=$(jq -er '.versionCode' latest.json)
+          test "$VERSION_CODE" -gt "$CURRENT_CODE"
+
+          STAGE="staging/v${VERSION_NAME}"
+          APK="releases/v${VERSION_NAME}/Jarvis-v${VERSION_NAME}-release-signed.apk"
+          CANDIDATE='/tmp/jarvis-release-candidate.apk'
+          test ! -e "$APK"
+          compgen -G "$STAGE/part-*" >/dev/null
+          cat "$STAGE"/part-* | base64 --decode > "$CANDIDATE"
+
+          test "$(xxd -p -l 2 "$CANDIDATE")" = '504b'
+          unzip -tq "$CANDIDATE"
+          ACTUAL_SHA=$(sha256sum "$CANDIDATE" | awk '{print $1}')
+          test "$ACTUAL_SHA" = "$EXPECTED_SHA"
+
+          BUILD_TOOLS="$ANDROID_HOME/build-tools/35.0.0"
+          BADGING=$("$BUILD_TOOLS/aapt" dump badging "$CANDIDATE" | head -n 1)
+          grep -Fq "package: name='$PACKAGE_NAME'" <<<"$BADGING"
+          grep -Fq "versionCode='$VERSION_CODE'" <<<"$BADGING"
+          grep -Fq "versionName='$VERSION_NAME'" <<<"$BADGING"
+
+          "$BUILD_TOOLS/apksigner" verify --verbose --print-certs "$CANDIDATE" | tee /tmp/apksigner-candidate.txt
+          grep -Fq 'Verified using v2 scheme (APK Signature Scheme v2): true' /tmp/apksigner-candidate.txt
+          grep -Fq 'Verified using v3 scheme (APK Signature Scheme v3): true' /tmp/apksigner-candidate.txt
+          SIGNER=$(awk -F': ' '/Signer #1 certificate SHA-256 digest:/ {print tolower($2); exit}' /tmp/apksigner-candidate.txt)
+          test "$SIGNER" = "$RELEASE_CERT"
+
+          mkdir -p "$(dirname "$APK")"
+          cp "$CANDIDATE" "$APK"
+          printf '%s\n' "$APK" > /tmp/release-apk-path
+          printf '%s\n' "$STAGE" > /tmp/release-stage-path
+
+      - name: Publish immutable APK bytes first
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK=$(cat /tmp/release-apk-path)
+          git config user.name 'Jarvis Release Bot'
+          git config user.email 'jarvis-release-bot@users.noreply.github.com'
+          git add "$APK"
+          git commit -m "Publish Jarvis Android v${VERSION_NAME} APK"
+          git push origin HEAD:release-feed
+          git rev-parse HEAD > /tmp/apk-publication-commit
+
+      - name: Re-download and verify public committed bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK=$(cat /tmp/release-apk-path)
+          PUBLIC_COMMIT=$(cat /tmp/apk-publication-commit)
+          EXPECTED_SHA=$(tr '[:upper:]' '[:lower:]' <<<"$EXPECTED_SHA" | tr -d '[:space:]')
+          BUILD_TOOLS="$ANDROID_HOME/build-tools/35.0.0"
+          URL="https://raw.githubusercontent.com/livenewme/Jarvis-Signed/${PUBLIC_COMMIT}/${APK}"
+
+          curl --fail --location --retry 5 --retry-all-errors --output /tmp/jarvis-public.apk "$URL"
+          test "$(xxd -p -l 2 /tmp/jarvis-public.apk)" = '504b'
+          unzip -tq /tmp/jarvis-public.apk
+          PUBLIC_SHA=$(sha256sum /tmp/jarvis-public.apk | awk '{print $1}')
+          test "$PUBLIC_SHA" = "$EXPECTED_SHA"
+          cmp --silent /tmp/jarvis-release-candidate.apk /tmp/jarvis-public.apk
+
+          BADGING=$("$BUILD_TOOLS/aapt" dump badging /tmp/jarvis-public.apk | head -n 1)
+          grep -Fq "package: name='$PACKAGE_NAME'" <<<"$BADGING"
+          grep -Fq "versionCode='$VERSION_CODE'" <<<"$BADGING"
+          grep -Fq "versionName='$VERSION_NAME'" <<<"$BADGING"
+          "$BUILD_TOOLS/apksigner" verify --verbose --print-certs /tmp/jarvis-public.apk | tee /tmp/apksigner-public.txt
+          grep -Fq 'Verified using v2 scheme (APK Signature Scheme v2): true' /tmp/apksigner-public.txt
+          grep -Fq 'Verified using v3 scheme (APK Signature Scheme v3): true' /tmp/apksigner-public.txt
+          SIGNER=$(awk -F': ' '/Signer #1 certificate SHA-256 digest:/ {print tolower($2); exit}' /tmp/apksigner-public.txt)
+          test "$SIGNER" = "$RELEASE_CERT"
+
+      - name: Advance updater manifest last
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK=$(cat /tmp/release-apk-path)
+          STAGE=$(cat /tmp/release-stage-path)
+          EXPECTED_SHA=$(tr '[:upper:]' '[:lower:]' <<<"$EXPECTED_SHA" | tr -d '[:space:]')
+          export EXPECTED_SHA APK
+          python3 - <<'PY'
+          import json, os
+          manifest = {
+              'versionName': os.environ['VERSION_NAME'],
+              'versionCode': int(os.environ['VERSION_CODE']),
+              'apkUrl': f"https://raw.githubusercontent.com/livenewme/Jarvis-Signed/release-feed/{os.environ['APK']}",
+              'sha256': os.environ['EXPECTED_SHA'],
+              'releaseCertSha256': os.environ['RELEASE_CERT'],
+              'releaseNotes': os.environ['RELEASE_NOTES'],
+          }
+          with open('latest.json', 'w', encoding='utf-8') as f:
+              json.dump(manifest, f, indent=2, ensure_ascii=False)
+              f.write('\n')
+          PY
+          git add latest.json
+          git rm -r "$STAGE"
+          git commit -m "Set Jarvis Android v${VERSION_NAME} as latest"
+          git push origin HEAD:release-feed
+
+          {
+            echo '### Jarvis Android release published'
+            echo "- Version: $VERSION_NAME ($VERSION_CODE)"
+            echo "- SHA-256: $EXPECTED_SHA"
+            echo "- Signing certificate: $RELEASE_CERT"
+            echo '- Public APK bytes were re-downloaded and byte-compared before latest.json advanced.'
+          } >> "$GITHUB_STEP_SUMMARY"
