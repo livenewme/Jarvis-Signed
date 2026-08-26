@@ -1,0 +1,75 @@
+name: Audit Jarvis Android release feed
+
+on:
+  push:
+    branches: [release-feed]
+    paths:
+      - 'latest.json'
+      - 'releases/**'
+      - '.github/workflows/audit-release-feed.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: release-feed
+      - uses: android-actions/setup-android@v3
+      - name: Install APK verification tools
+        run: sdkmanager 'build-tools;35.0.0' >/dev/null
+      - name: Verify manifest and publicly served APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          CERT='e2384592780978342912be64664d4ed53e392d8b0cb107d99a7b47b3423bc153'
+          PACKAGE='com.livenewme.jarvis'
+          BUILD_TOOLS="$ANDROID_HOME/build-tools/35.0.0"
+
+          VERSION_NAME=$(jq -er '.versionName' latest.json)
+          VERSION_CODE=$(jq -er '.versionCode' latest.json)
+          APK_URL=$(jq -er '.apkUrl' latest.json)
+          EXPECTED_SHA=$(jq -er '.sha256 | ascii_downcase' latest.json)
+          MANIFEST_CERT=$(jq -er '.releaseCertSha256 | ascii_downcase' latest.json)
+
+          [[ "$VERSION_NAME" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]
+          [[ "$VERSION_CODE" =~ ^[1-9][0-9]*$ ]]
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{64}$ ]]
+          test "$MANIFEST_CERT" = "$CERT"
+
+          EXPECTED_URL="https://raw.githubusercontent.com/livenewme/Jarvis-Signed/release-feed/releases/v${VERSION_NAME}/Jarvis-v${VERSION_NAME}-release-signed.apk"
+          test "$APK_URL" = "$EXPECTED_URL"
+
+          curl --fail --location --retry 5 --retry-all-errors \
+            --output /tmp/jarvis-public.apk "${APK_URL}?audit=${GITHUB_SHA}"
+          test "$(xxd -p -l 2 /tmp/jarvis-public.apk)" = '504b'
+          unzip -tq /tmp/jarvis-public.apk
+
+          ACTUAL_SHA=$(sha256sum /tmp/jarvis-public.apk | awk '{print $1}')
+          test "$ACTUAL_SHA" = "$EXPECTED_SHA"
+
+          BADGING=$("$BUILD_TOOLS/aapt" dump badging /tmp/jarvis-public.apk | head -n 1)
+          grep -Fq "package: name='$PACKAGE'" <<<"$BADGING"
+          grep -Fq "versionCode='$VERSION_CODE'" <<<"$BADGING"
+          grep -Fq "versionName='$VERSION_NAME'" <<<"$BADGING"
+
+          "$BUILD_TOOLS/apksigner" verify --verbose --print-certs /tmp/jarvis-public.apk | tee /tmp/apksigner.txt
+          grep -Fq 'Verified using v2 scheme (APK Signature Scheme v2): true' /tmp/apksigner.txt
+          grep -Fq 'Verified using v3 scheme (APK Signature Scheme v3): true' /tmp/apksigner.txt
+          SIGNER=$(awk -F': ' '/Signer #1 certificate SHA-256 digest:/ {print tolower($2); exit}' /tmp/apksigner.txt)
+          test "$SIGNER" = "$CERT"
+
+          {
+            echo '### Jarvis release-feed audit: PASS'
+            echo "- Version: $VERSION_NAME ($VERSION_CODE)"
+            echo "- Package: $PACKAGE"
+            echo "- SHA-256: $ACTUAL_SHA"
+            echo "- Signing certificate: $SIGNER"
+            echo '- APK integrity: ZIP valid'
+            echo '- Signing: APK Signature Scheme v2 + v3 verified'
+            echo '- Source: publicly served raw.githubusercontent.com bytes'
+          } >> "$GITHUB_STEP_SUMMARY"
