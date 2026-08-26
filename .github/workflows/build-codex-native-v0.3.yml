@@ -12,89 +12,40 @@ permissions:
   actions: read
 
 jobs:
-  build-v033-hotfix:
+  prepare-v033-aligned-base:
     runs-on: ubuntu-latest
     env:
-      BASE_RUN_ID: '32998107787'
-      BASE_ARTIFACT: 'jarvis-v0.3.2-android-lock-hotfix-unsigned'
+      BASE_RUN_ID: '33008045886'
+      BASE_ARTIFACT: 'jarvis-v0.3.3-sandbox-enum-hotfix-unsigned'
     steps:
       - uses: actions/checkout@v4
       - uses: android-actions/setup-android@v3
-
-      - name: Install APK tools
-        shell: bash
-        run: |
-          set -euo pipefail
-          sdkmanager 'build-tools;35.0.0' >/dev/null
-          curl -fL --retry 3 -o /tmp/apktool.jar https://github.com/iBotPeaches/Apktool/releases/download/v2.9.3/apktool_2.9.3.jar
-          echo '7956eb04194300ce0d0a84ad18771eebc94b89fb8d1ddcce8ea4c056818646f4  /tmp/apktool.jar' | sha256sum -c -
-
-      - name: Download exact v0.3.2 unsigned base
-        shell: bash
+      - name: Install Build Tools 35
+        run: sdkmanager 'build-tools;35.0.0' >/dev/null
+      - name: Download exact unsigned v0.3.3 artifact
         env:
           GH_TOKEN: ${{ github.token }}
+        shell: bash
         run: |
           set -euo pipefail
-          mkdir -p /tmp/base
+          mkdir -p /tmp/base out
           gh run download "$BASE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "$BASE_ARTIFACT" --dir /tmp/base
-          BASE_APK="$(find /tmp/base -name 'Jarvis-v0.3.2-android-lock-hotfix-unsigned.apk' -print -quit)"
-          test -n "$BASE_APK"
-          cp "$BASE_APK" /tmp/base.apk
-          unzip -tq /tmp/base.apk
-          unzip -p /tmp/base.apk lib/arm64-v8a/libcodex_app_server.so | sha256sum | tee /tmp/base-native.sha256
-
-      - name: Patch sandbox enum and bump v0.3.3
+          BASE="$(find /tmp/base -name 'Jarvis-v0.3.3-sandbox-enum-hotfix-unsigned.apk' -print -quit)"
+          test -n "$BASE"
+          cp "$BASE" /tmp/base.apk
+          echo '474a3a34344b15bf6d086e6986f723ae805668044bdd08367f803e6cf54e0639  /tmp/base.apk' | sha256sum -c -
+      - name: Zipalign deterministic signing base
         shell: bash
         run: |
           set -euo pipefail
-          java -jar /tmp/apktool.jar d -f /tmp/base.apk -o /tmp/decoded
-          python3 - <<'PY'
-          from pathlib import Path
-
-          root = Path('/tmp/decoded')
-          matches = []
-          for path in root.glob('smali*/**/*.smali'):
-              text = path.read_text()
-              if '"readOnly"' in text:
-                  count = text.count('"readOnly"')
-                  path.write_text(text.replace('"readOnly"', '"read-only"'))
-                  matches.append((path, count))
-          total = sum(count for _, count in matches)
-          if total != 1:
-              raise SystemExit(f'expected exactly one readOnly string, found {total}: {matches}')
-
-          yml = root / 'apktool.yml'
-          text = yml.read_text()
-          text = text.replace("versionCode: '5'", "versionCode: '6'")
-          text = text.replace('versionCode: 5', 'versionCode: 6')
-          text = text.replace("versionName: '0.3.2'", "versionName: '0.3.3'")
-          text = text.replace('versionName: 0.3.2', 'versionName: 0.3.3')
-          if ("versionCode: '6'" not in text and 'versionCode: 6' not in text) or '0.3.3' not in text:
-              raise SystemExit('version bump failed')
-          yml.write_text(text)
-          PY
-          ! grep -R -q '"readOnly"' /tmp/decoded/smali*
-          grep -R -n '"read-only"' /tmp/decoded/smali*
-
-      - name: Rebuild and verify unsigned v0.3.3
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p out
-          java -jar /tmp/apktool.jar b /tmp/decoded -o out/Jarvis-v0.3.3-sandbox-enum-hotfix-unsigned.apk
-          unzip -tq out/Jarvis-v0.3.3-sandbox-enum-hotfix-unsigned.apk
           BUILD_TOOLS="$ANDROID_HOME/build-tools/35.0.0"
-          "$BUILD_TOOLS/aapt" dump badging out/Jarvis-v0.3.3-sandbox-enum-hotfix-unsigned.apk | head -n 1 | tee out/badging.txt
-          grep -Fq "package: name='com.livenewme.jarvis'" out/badging.txt
-          grep -Fq "versionCode='6'" out/badging.txt
-          grep -Fq "versionName='0.3.3'" out/badging.txt
-          unzip -p out/Jarvis-v0.3.3-sandbox-enum-hotfix-unsigned.apk lib/arm64-v8a/libcodex_app_server.so | sha256sum | tee out/libcodex_app_server.so.sha256
-          test "$(awk '{print $1}' out/libcodex_app_server.so.sha256)" = "$(awk '{print $1}' /tmp/base-native.sha256)"
-          sha256sum out/Jarvis-v0.3.3-sandbox-enum-hotfix-unsigned.apk | tee out/Jarvis-v0.3.3-sandbox-enum-hotfix-unsigned.apk.sha256
-
-      - name: Upload unsigned v0.3.3 hotfix
+          "$BUILD_TOOLS/zipalign" -f -p 4 /tmp/base.apk out/Jarvis-v0.3.3-aligned-unsigned.apk
+          "$BUILD_TOOLS/zipalign" -c -p 4 out/Jarvis-v0.3.3-aligned-unsigned.apk
+          unzip -tq out/Jarvis-v0.3.3-aligned-unsigned.apk
+          sha256sum out/Jarvis-v0.3.3-aligned-unsigned.apk | tee out/Jarvis-v0.3.3-aligned-unsigned.apk.sha256
+      - name: Upload aligned base
         uses: actions/upload-artifact@v4
         with:
-          name: jarvis-v0.3.3-sandbox-enum-hotfix-unsigned
+          name: jarvis-v0.3.3-aligned-unsigned
           path: out/
           if-no-files-found: error
