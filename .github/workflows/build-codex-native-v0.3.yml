@@ -12,176 +12,89 @@ permissions:
   actions: read
 
 jobs:
-  build-v032-hotfix:
+  build-v033-hotfix:
     runs-on: ubuntu-latest
     env:
-      BASE_RUN_ID: '32995612015'
-      BASE_ARTIFACT: 'jarvis-v0.3.1-codex-login-hotfix-unsigned'
+      BASE_RUN_ID: '32998107787'
+      BASE_ARTIFACT: 'jarvis-v0.3.2-android-lock-hotfix-unsigned'
     steps:
       - uses: actions/checkout@v4
-
       - uses: android-actions/setup-android@v3
 
-      - name: Install Android and Rust toolchains
+      - name: Install APK tools
         shell: bash
         run: |
           set -euo pipefail
-          sdkmanager 'build-tools;35.0.0' 'ndk;27.3.13750724' >/dev/null
-          rustup toolchain install 1.95.0 --profile minimal
-          rustup default 1.95.0
-          rustup target add aarch64-linux-android
-          cargo install cargo-ndk --locked
+          sdkmanager 'build-tools;35.0.0' >/dev/null
+          curl -fL --retry 3 -o /tmp/apktool.jar https://github.com/iBotPeaches/Apktool/releases/download/v2.9.3/apktool_2.9.3.jar
+          echo '7956eb04194300ce0d0a84ad18771eebc94b89fb8d1ddcce8ea4c056818646f4  /tmp/apktool.jar' | sha256sum -c -
 
-      - name: Build Android-patched pinned Codex app-server
-        shell: bash
-        run: |
-          set -euo pipefail
-          git clone --filter=blob:none https://github.com/openai/codex.git /tmp/openai-codex
-          cd /tmp/openai-codex
-          git checkout 2764e83626efe55f64e04d153fc99a157327f3c2
-          cd codex-rs
-
-          python3 - <<'PY'
-          from pathlib import Path
-
-          workspace = Path('Cargo.toml')
-          text = workspace.read_text()
-          old = 'reqwest = { version = "0.12", features = ["cookies"] }'
-          new = 'reqwest = { version = "0.12", default-features = false, features = ["cookies", "http2", "rustls-tls"] }'
-          if old not in text:
-              raise SystemExit('expected workspace reqwest dependency not found')
-          workspace.write_text(text.replace(old, new, 1))
-
-          cargo = Path('http-client/Cargo.toml')
-          text = cargo.read_text()
-          needle = 'native-tls = "0.2"\n'
-          if needle not in text:
-              raise SystemExit('expected native-tls dependency not found')
-          cargo.write_text(text.replace(needle, '', 1))
-
-          source = Path('http-client/src/route_aware_client_pool.rs')
-          text = source.read_text()
-          needle = '                || error.downcast_ref::<native_tls::Error>().is_some()\n'
-          if needle not in text:
-              raise SystemExit('expected native_tls error classifier not found')
-          source.write_text(text.replace(needle, '', 1))
-
-          feedback = Path('feedback/Cargo.toml')
-          text = feedback.read_text()
-          old = 'sentry = { version = "0.46" }\n'
-          new = 'sentry = { version = "0.46", default-features = false, features = ["reqwest", "rustls"] }\n'
-          if old not in text:
-              raise SystemExit('expected codex-feedback sentry dependency not found')
-          feedback.write_text(text.replace(old, new, 1))
-
-          # Android std::fs::File locking is unsupported on this target. Jarvis
-          # has one private CODEX_HOME and one app-server process, so skip the
-          # desktop cross-process locks that prevent startup.
-          arg0 = Path('arg0/src/lib.rs')
-          text = arg0.read_text()
-          old = '    lock_file.try_lock()?;\n'
-          new = '    #[cfg(not(target_os = "android"))]\n    lock_file.try_lock()?;\n'
-          if old not in text:
-              raise SystemExit('expected arg0 try_lock call not found')
-          arg0.write_text(text.replace(old, new, 1))
-
-          install_id = Path('core/src/installation_id.rs')
-          text = install_id.read_text()
-          old = '        file.lock()?;\n'
-          new = '        #[cfg(not(target_os = "android"))]\n        file.lock()?;\n'
-          if old not in text:
-              raise SystemExit('expected installation_id file.lock call not found')
-          install_id.write_text(text.replace(old, new, 1))
-          PY
-
-          grep -n -A2 -B2 'target_os = "android"' arg0/src/lib.rs core/src/installation_id.rs
-
-          openssl_tree="$(cargo tree -p codex-app-server --target aarch64-linux-android -i openssl-sys 2>/dev/null || true)"
-          if printf '%s\n' "$openssl_tree" | grep -Eq '^openssl-sys v'; then
-            printf '%s\n' "$openssl_tree"
-            exit 1
-          fi
-          native_tls_tree="$(cargo tree -p codex-app-server --target aarch64-linux-android -i native-tls 2>/dev/null || true)"
-          if printf '%s\n' "$native_tls_tree" | grep -Eq '^native-tls v'; then
-            printf '%s\n' "$native_tls_tree"
-            exit 1
-          fi
-
-          cargo ndk --target arm64-v8a --platform 26 build -p codex-app-server --bin codex-app-server --release
-          mkdir -p /tmp/native
-          cp target/aarch64-linux-android/release/codex-app-server /tmp/native/libcodex_app_server.so
-          file /tmp/native/libcodex_app_server.so
-          sha256sum /tmp/native/libcodex_app_server.so | tee /tmp/native-unstripped.sha256
-
-      - name: Strip native runtime
-        shell: bash
-        run: |
-          set -euo pipefail
-          OBJCOPY="$ANDROID_HOME/ndk/27.3.13750724/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-objcopy"
-          "$OBJCOPY" --strip-all /tmp/native/libcodex_app_server.so
-          file /tmp/native/libcodex_app_server.so
-          readelf -h /tmp/native/libcodex_app_server.so | grep -E 'Class:|Machine:|Type:'
-          sha256sum /tmp/native/libcodex_app_server.so | tee /tmp/native-stripped.sha256
-
-      - name: Download v0.3.1 wrapper-fixed unsigned APK
+      - name: Download exact v0.3.2 unsigned base
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          mkdir -p /tmp/base-artifact
-          gh run download "$BASE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "$BASE_ARTIFACT" --dir /tmp/base-artifact
-          BASE_APK=$(find /tmp/base-artifact -name '*.apk' -type f | head -n1)
+          mkdir -p /tmp/base
+          gh run download "$BASE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "$BASE_ARTIFACT" --dir /tmp/base
+          BASE_APK="$(find /tmp/base -name 'Jarvis-v0.3.2-android-lock-hotfix-unsigned.apk' -print -quit)"
           test -n "$BASE_APK"
-          cp "$BASE_APK" /tmp/base-v031.apk
-          unzip -tq /tmp/base-v031.apk
-          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging /tmp/base-v031.apk | head -n1 | tee /tmp/base-badging.txt
-          grep -Fq "package: name='com.livenewme.jarvis'" /tmp/base-badging.txt
-          grep -Fq "versionCode='4'" /tmp/base-badging.txt
-          grep -Fq "versionName='0.3.1'" /tmp/base-badging.txt
+          cp "$BASE_APK" /tmp/base.apk
+          unzip -tq /tmp/base.apk
+          unzip -p /tmp/base.apk lib/arm64-v8a/libcodex_app_server.so | sha256sum | tee /tmp/base-native.sha256
 
-      - name: Build unsigned v0.3.2 with Android lock-fixed native runtime
+      - name: Patch sandbox enum and bump v0.3.3
         shell: bash
         run: |
           set -euo pipefail
-          curl -fL --retry 3 -o /tmp/apktool.jar https://github.com/iBotPeaches/Apktool/releases/download/v2.9.3/apktool_2.9.3.jar
-          echo '7956eb04194300ce0d0a84ad18771eebc94b89fb8d1ddcce8ea4c056818646f4  /tmp/apktool.jar' | sha256sum -c -
-          java -jar /tmp/apktool.jar d -f /tmp/base-v031.apk -o /tmp/decoded
-
+          java -jar /tmp/apktool.jar d -f /tmp/base.apk -o /tmp/decoded
           python3 - <<'PY'
           from pathlib import Path
-          p = Path('/tmp/decoded/apktool.yml')
-          s = p.read_text()
-          s = s.replace("versionCode: '4'", "versionCode: '5'")
-          s = s.replace("versionCode: 4", "versionCode: 5")
-          s = s.replace("versionName: 0.3.1", "versionName: 0.3.2")
-          s = s.replace("versionName: '0.3.1'", "versionName: '0.3.2'")
-          if ('versionCode: 5' not in s and "versionCode: '5'" not in s):
-              raise SystemExit('versionCode bump not applied')
-          if '0.3.2' not in s:
-              raise SystemExit('versionName bump not applied')
-          p.write_text(s)
+
+          root = Path('/tmp/decoded')
+          matches = []
+          for path in root.glob('smali*/**/*.smali'):
+              text = path.read_text()
+              if '"readOnly"' in text:
+                  count = text.count('"readOnly"')
+                  path.write_text(text.replace('"readOnly"', '"read-only"'))
+                  matches.append((path, count))
+          total = sum(count for _, count in matches)
+          if total != 1:
+              raise SystemExit(f'expected exactly one readOnly string, found {total}: {matches}')
+
+          yml = root / 'apktool.yml'
+          text = yml.read_text()
+          text = text.replace("versionCode: '5'", "versionCode: '6'")
+          text = text.replace('versionCode: 5', 'versionCode: 6')
+          text = text.replace("versionName: '0.3.2'", "versionName: '0.3.3'")
+          text = text.replace('versionName: 0.3.2', 'versionName: 0.3.3')
+          if ("versionCode: '6'" not in text and 'versionCode: 6' not in text) or '0.3.3' not in text:
+              raise SystemExit('version bump failed')
+          yml.write_text(text)
           PY
+          ! grep -R -q '"readOnly"' /tmp/decoded/smali*
+          grep -R -n '"read-only"' /tmp/decoded/smali*
 
-          mkdir -p /tmp/decoded/lib/arm64-v8a out
-          cp /tmp/native/libcodex_app_server.so /tmp/decoded/lib/arm64-v8a/libcodex_app_server.so
-          java -jar /tmp/apktool.jar b /tmp/decoded -o out/Jarvis-v0.3.2-android-lock-hotfix-unsigned.apk
-
-          unzip -tq out/Jarvis-v0.3.2-android-lock-hotfix-unsigned.apk
+      - name: Rebuild and verify unsigned v0.3.3
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          java -jar /tmp/apktool.jar b /tmp/decoded -o out/Jarvis-v0.3.3-sandbox-enum-hotfix-unsigned.apk
+          unzip -tq out/Jarvis-v0.3.3-sandbox-enum-hotfix-unsigned.apk
           BUILD_TOOLS="$ANDROID_HOME/build-tools/35.0.0"
-          "$BUILD_TOOLS/aapt" dump badging out/Jarvis-v0.3.2-android-lock-hotfix-unsigned.apk | head -n1 | tee out/badging.txt
+          "$BUILD_TOOLS/aapt" dump badging out/Jarvis-v0.3.3-sandbox-enum-hotfix-unsigned.apk | head -n 1 | tee out/badging.txt
           grep -Fq "package: name='com.livenewme.jarvis'" out/badging.txt
-          grep -Fq "versionCode='5'" out/badging.txt
-          grep -Fq "versionName='0.3.2'" out/badging.txt
-          unzip -p out/Jarvis-v0.3.2-android-lock-hotfix-unsigned.apk lib/arm64-v8a/libcodex_app_server.so > /tmp/bundled-native.so
-          test "$(sha256sum /tmp/bundled-native.so | awk '{print $1}')" = "$(awk '{print $1}' /tmp/native-stripped.sha256)"
-          file /tmp/bundled-native.so | tee out/native-file.txt
-          cp /tmp/native-stripped.sha256 out/libcodex_app_server.so.sha256
-          sha256sum out/Jarvis-v0.3.2-android-lock-hotfix-unsigned.apk | tee out/Jarvis-v0.3.2-android-lock-hotfix-unsigned.apk.sha256
+          grep -Fq "versionCode='6'" out/badging.txt
+          grep -Fq "versionName='0.3.3'" out/badging.txt
+          unzip -p out/Jarvis-v0.3.3-sandbox-enum-hotfix-unsigned.apk lib/arm64-v8a/libcodex_app_server.so | sha256sum | tee out/libcodex_app_server.so.sha256
+          test "$(awk '{print $1}' out/libcodex_app_server.so.sha256)" = "$(awk '{print $1}' /tmp/base-native.sha256)"
+          sha256sum out/Jarvis-v0.3.3-sandbox-enum-hotfix-unsigned.apk | tee out/Jarvis-v0.3.3-sandbox-enum-hotfix-unsigned.apk.sha256
 
-      - name: Upload unsigned v0.3.2 hotfix
+      - name: Upload unsigned v0.3.3 hotfix
         uses: actions/upload-artifact@v4
         with:
-          name: jarvis-v0.3.2-android-lock-hotfix-unsigned
+          name: jarvis-v0.3.3-sandbox-enum-hotfix-unsigned
           path: out/
           if-no-files-found: error
