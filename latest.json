@@ -1,8 +1,8 @@
 {
-  "versionName": "0.1.0",
-  "versionCode": 1,
-  "apkUrl": "https://raw.githubusercontent.com/livenewme/Jarvis-Signed/release-feed/releases/v0.1.0/Jarvis-v0.1.0-release-signed.apk",
-  "sha256": "815492a2f58fbe9c2480c96be61ad3ced6ab8582e7addd8763f489874f5b0fcf",
+  "versionName": "0.2.0",
+  "versionCode": 2,
+  "apkUrl": "https://raw.githubusercontent.com/livenewme/Jarvis-Signed/release-feed/releases/v0.2.0/Jarvis-v0.2.0-release-signed.apk",
+  "sha256": "e81761f33d09d2172de1e5ba5c2a9aba8491af1c69deec574e74ba9d9efe4cb2",
   "releaseCertSha256": "e2384592780978342912be64664d4ed53e392d8b0cb107d99a7b47b3423bc153",
-  "releaseNotes": "Initial Jarvis Android remote client production release."
+  "releaseNotes": "Runs Jarvis entirely on-device as an Android foreground service with local durable event history, direct model access, Keystore-protected credentials, and live notification status for runtime activity."
 }
