@@ -107,13 +107,15 @@ jobs:
           out="$GITHUB_WORKSPACE/out"
           stage=/tmp/jarvis-public-toolchain
           rm -rf "$out" "$stage"
-          mkdir -p "$out" "$stage/android-sdk/platforms" "$stage/android-sdk/build-tools" "$stage/gradle-cache/caches"
+          mkdir -p "$out" "$stage/jdk17" "$stage/android-sdk/platforms" "$stage/android-sdk/build-tools" "$stage/gradle-cache/caches"
 
           gradle_bin="$(readlink -f "$(command -v gradle)")"
           gradle_home="$(dirname "$(dirname "$gradle_bin")")"
           test -x "$gradle_home/bin/gradle"
+          java_home_real="$(readlink -f "$JAVA_HOME")"
+          test -x "$java_home_real/bin/java"
 
-          cp -a "$JAVA_HOME" "$stage/jdk17"
+          cp -aL "$java_home_real"/. "$stage/jdk17"/
           cp -a "$gradle_home" "$stage/gradle-8.9"
           cp -a "$ANDROID_HOME/platforms/android-35" "$stage/android-sdk/platforms/android-35"
           cp -a "$ANDROID_HOME/build-tools/35.0.0" "$stage/android-sdk/build-tools/35.0.0"
