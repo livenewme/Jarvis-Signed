@@ -1,13 +1,11 @@
-# Jarvis Signed Releases
+# Jarvis-Signed — Retired
 
-Public release channel for the Jarvis Android client.
+This repository is retained only as historical release/audit material.
 
-This repository contains only public release artifacts and release metadata. The production signing keystore and passwords are intentionally never stored here, in the source repository, or in CI.
+The Jarvis Android client no longer contains an internal updater and no longer uses this repository as an update channel. The `release-feed` pointer and release automation have been disabled/removed.
 
-Installed Jarvis production builds trust the pinned release-certificate SHA-256 fingerprint:
+Future Jarvis Android updates are expected to be distributed manually as production-signed APKs using the existing Android signing identity so installed builds can verify normal Android signer continuity.
 
-`e2384592780978342912be64664d4ed53e392d8b0cb107d99a7b47b3423bc153`
+Do not treat files or historical branches in this repository as a live update feed.
 
-The live updater reads `latest.json` from the `release-feed` branch. Versioned APKs are published before the mutable `latest.json` pointer is advanced.
-
-Current production Android release: **v0.2.0** (`versionCode 2`).
+Retired: 2026-08-31.
