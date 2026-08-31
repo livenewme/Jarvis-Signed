@@ -1,13 +1,9 @@
-# Jarvis Signed Releases
+# Jarvis release feed — retired
 
-Public release channel for the Jarvis Android client.
+This branch is no longer an active Jarvis Android update channel.
 
-This repository contains only public release artifacts and release metadata. The production signing keystore and passwords are intentionally never stored here, in the source repository, or in CI.
+`latest.json` has been removed and all release-feed automation has been removed. Historical release and staging files are retained only for audit/reference purposes.
 
-Installed Jarvis production builds trust the pinned release-certificate SHA-256 fingerprint:
+Jarvis Android v0.1.1 and later do not contain the internal updater and do not poll this branch.
 
-`e2384592780978342912be64664d4ed53e392d8b0cb107d99a7b47b3423bc153`
-
-The live updater reads `latest.json` from the `release-feed` branch. Versioned APKs are published before the mutable `latest.json` pointer is advanced.
-
-Current production Android release: **v0.1.0** (`versionCode 1`).
+Retired: 2026-08-31.
