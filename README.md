@@ -10,4 +10,4 @@ Installed Jarvis production builds trust the pinned release-certificate SHA-256 
 
 The live updater reads `latest.json` from the `release-feed` branch. Versioned APKs are published before the mutable `latest.json` pointer is advanced.
 
-Current production Android release: **v0.1.0** (`versionCode 1`).
+Current production Android release: **v0.2.0** (`versionCode 2`).
